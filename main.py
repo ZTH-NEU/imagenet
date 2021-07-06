@@ -22,11 +22,11 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--data', default='/input', metavar='DIR',
+parser.add_argument('--data', default='./input', metavar='DIR',
                     help='path to dataset')
-parser.add_argument('--outf', default='/output',
+parser.add_argument('--outf', default='./output',
                     help='folder to output model checkpoints')
-parser.add_argument('--evalf', default="/eval" ,help='path to evaluate sample')
+parser.add_argument('--evalf', default="./eval" ,help='path to evaluate sample')
 parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet18',
                     choices=model_names,
                     help='model architecture: ' +
@@ -93,11 +93,11 @@ def main():
         pass
 
     # can we use CUDA?
-    cuda = False #torch.cuda.is_available()
+    cuda = True #torch.cuda.is_available()
     print ("=> using cuda: {cuda}".format(cuda=cuda))
     # Not working on FloydHub
-    # if torch.cuda.device_count() is not None:
-    #     print ("=> available cuda devices: {dev}").format(dev=torch.cuda.device_count())
+    if torch.cuda.device_count() is not None:
+        print ("=> available cuda devices: {dev}".format(dev=torch.cuda.device_count()))
     # Distributed Training?
     args.distributed = args.world_size > 1
     print ("=> distributed training: {dist}".format(dist=args.distributed))
@@ -121,7 +121,7 @@ def main():
     train_dataset = datasets.ImageFolder(
         traindir,
         transforms.Compose([
-            transforms.RandomSizedCrop(size[0]), #224 , 299
+            transforms.RandomResizedCrop(size[0]), #224 , 299
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
@@ -149,7 +149,7 @@ def main():
     # Validate -> Preprocessing -> Tensor
     val_loader = torch.utils.data.DataLoader(
         datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Scale(size[1]), # 256
+            transforms.Resize(size[1]), # 256
             transforms.CenterCrop(size[0]), # 224 , 299
             transforms.ToTensor(),
             normalize,
@@ -161,7 +161,7 @@ def main():
         # Testing -> Preprocessing -> Tensor
         test_loader = torch.utils.data.DataLoader(
             datasets.ImageFolder(testdir, transforms.Compose([
-                transforms.Scale(size[1]), # 256
+                transforms.Resize(size[1]), # 256
                 transforms.CenterCrop(size[0]), # 224 , 299
                 transforms.ToTensor(),
                 normalize,
@@ -177,12 +177,12 @@ def main():
     if args.pretrained:
         print("=> using pre-trained model '{}'".format(args.arch))
         model = models.__dict__[args.arch](pretrained=True)
-        # print(model)
+        print(model)
         # quit()
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch](num_classes=labels)
-        # print(model)
+        print(model)
 
     # Freeze model, train only the last FC layer for the transfered task
     if args.fine_tuning:
@@ -196,18 +196,18 @@ def main():
             num_ftrs = model.fc.in_features
             model.fc = nn.Linear(num_ftrs, labels)
             parameters = model.fc.parameters()
-            # print(model)
+            print(model)
             # quit()
         # ALEXNET & VGG
         elif args.arch == 'alexnet' or args.arch == 'vgg19':
             model.classifier._modules['6'] = nn.Linear(4096, labels)
             parameters = model.classifier._modules['6'].parameters()
-            # print(model)
+            print(model)
             # quit()
         elif args.arch == 'densenet121': # DENSENET
             model.classifier = nn.Linear(1024, labels)
             parameters = model.classifier.parameters()
-            # print(model)
+            print(model)
             # quit()
         # INCEPTION
         elif args.arch == 'inception_v3':
@@ -220,7 +220,7 @@ def main():
             num_ftrs = model.fc.in_features
             model.fc = nn.Linear(num_ftrs, labels)
             parameters = model.fc.parameters()
-            # print(model)
+            print(model)
             # quit()
         else:
             print("Error: Fine-tuning is not supported on this architecture.")
@@ -514,4 +514,5 @@ def accuracy(output, target, topk=(1,)):
 
 
 if __name__ == '__main__':
+    print('a')
     main()
