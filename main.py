@@ -1,5 +1,6 @@
 import argparse
 import numpy
+import numpy as np
 import os
 import shutil
 import time
@@ -15,6 +16,10 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+from scipy import interp
+import matplotlib.pyplot as plt
+from itertools import cycle
+from sklearn.metrics import roc_curve, auc,f1_score, precision_recall_curve, average_precision_score
 
 # Load all model arch available on Pytorch
 model_names = sorted(name for name in models.__dict__
@@ -22,7 +27,7 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--data', default='./input', metavar='DIR',
+parser.add_argument('--data', default='E:/data/input/', metavar='DIR',
                     help='path to dataset')
 parser.add_argument('--outf', default='./output',
                     help='folder to output model checkpoints')
@@ -68,6 +73,12 @@ parser.add_argument('--dist-backend', default='gloo', type=str,
                     help='distributed backend')
 
 best_prec1 = torch.FloatTensor([0])
+
+all_c, all_top1, all_top5 = [], [], []
+
+score_list = []  # 存储预测得分
+label_list = []  # 存储真实标签
+num_class = 2
 
 def get_images_name(folder):
         """Create a generator to list images name at evaluation time"""
@@ -323,6 +334,11 @@ def main():
                 'optimizer' : optimizer.state_dict(),
             }, is_best)
 
+        # prec1 = validate(val_loader, model, criterion)
+        validate_final(val_loader, model, criterion)
+        print('print_roc')
+        print_roc(score_list, label_list, num_class)
+
 
 def train(train_loader, model, criterion, optimizer, epoch):
     """Train the model on Training Set"""
@@ -355,12 +371,13 @@ def train(train_loader, model, criterion, optimizer, epoch):
             for o in output:
                 prec1 = accuracy(o.data, target, topk=(1,))
                 top1.update(prec1[0], input.size(0))
-            losses.update(loss.data[0], input.size(0)*len(output))
+            losses.update(loss.item(), input.size(0)*len(output))
         else:
             loss = criterion(output, target_var)
             prec1 = accuracy(output.data, target, topk=(1,))
             top1.update(prec1[0], input.size(0))
-            losses.update(loss.data[0], input.size(0))
+            losses.update(loss.item(), input.size(0))
+
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -413,12 +430,12 @@ def validate(val_loader, model, criterion):
             for o in output:
                 prec1 = accuracy(o.data, target, topk=(1,))
                 top1.update(prec1[0], input.size(0))
-            losses.update(loss.data[0], input.size(0)*len(output))
+            losses.update(loss.item(), input.size(0)*len(output))
         else:
             loss = criterion(output, target_var)
             prec1 = accuracy(output.data, target, topk=(1,))
             top1.update(prec1[0], input.size(0))
-            losses.update(loss.data[0], input.size(0))
+            losses.update(loss.item(), input.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -438,6 +455,64 @@ def validate(val_loader, model, criterion):
     print(' * Prec@1 {top1}'
           .format(top1=numpy.asscalar(top1.avg.cpu().numpy())))
     return top1.avg
+
+def validate_final(val_loader, model, criterion):
+    """Validate the model on Validation Set"""
+    batch_time = AverageMeter()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    top5 = AverageMeter()
+
+    # switch to evaluate mode
+    model.eval()
+
+    end = time.time()
+    # Evaluate all the validation set
+    for i, (input, target) in enumerate(val_loader):
+        if cuda:
+            input, target = input.cuda(async=True), target.cuda(async=True)
+        with torch.no_grad():
+            input_var = torch.autograd.Variable(input)
+            target_var = torch.autograd.Variable(target)
+
+        # compute output
+        output = model(input_var)
+        # print ("Output: ", output)
+        #topk = (1,5) if labels >= 100 else (1,) # TODO: add more topk evaluation
+        # For nets that have multiple outputs such as Inception
+        if isinstance(output, tuple):
+            loss = sum((criterion(o,target_var) for o in output))
+            # print (output)
+            for o in output:
+                prec1 = accuracy(o.data, target, topk=(1,))
+                top1.update(prec1[0], input.size(0))
+            losses.update(loss.item(), input.size(0)*len(output))
+        else:
+            loss = criterion(output, target_var)
+            prec1 = accuracy(output.data, target, topk=(1,))
+            top1.update(prec1[0], input.size(0))
+            losses.update(loss.item(), input.size(0))
+        score_list.extend(output.detach().cpu().numpy())
+        label_list.extend(target.cpu().numpy())
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        # Info log every args.print_freq
+        if i % args.print_freq == 0:
+            print('Test: [{0}/{1}]\t'
+                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'Prec@1 {top1_val} ({top1_avg})'.format(
+                   i, len(val_loader), batch_time=batch_time,
+                   loss=losses,
+                   top1_val=numpy.asscalar(top1.val.cpu().numpy()),
+                   top1_avg=numpy.asscalar(top1.avg.cpu().numpy())))
+
+    print(' * Prec@1 {top1}'
+          .format(top1=numpy.asscalar(top1.avg.cpu().numpy())))
+    return
 
 
 def test(test_loader, model, names, classes):
@@ -512,6 +587,81 @@ def accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
+def print_roc(score_list,label_list,num_class = 2):
+
+    # 绘制ROC曲线
+
+    score_array = np.array(score_list)
+    score_array = score_array[:, :2]
+    for i in range(len(score_array)):
+        index_max = score_array[i].argmax()
+        index_min = score_array[i].argmin()
+
+        score_array[i][index_max] = 1
+        score_array[i][index_min] = 0
+
+    # 将label转换成onehot形式
+    label_tensor = torch.tensor(label_list)
+    label_tensor = label_tensor.reshape((label_tensor.shape[0], 1))
+    label_onehot = torch.zeros(label_tensor.shape[0], num_class)
+    label_onehot.scatter_(dim=1, index=label_tensor, value=1)
+    label_onehot = label_onehot[:, :2]
+    label_onehot = np.array(label_onehot)
+
+    print("score_array:", score_array.shape)  # (batchsize, classnum)
+    print("label_onehot:", label_onehot.shape)  # torch.Size([batchsize, classnum])
+
+    # 调用sklearn库，计算每个类别对应的fpr和tpr
+    fpr_dict = dict()
+    tpr_dict = dict()
+    roc_auc_dict = dict()
+    for i in range(num_class):
+        fpr_dict[i], tpr_dict[i], _ = roc_curve(label_onehot[:, i], score_array[:, i])
+        roc_auc_dict[i] = auc(fpr_dict[i], tpr_dict[i])
+    # micro
+    fpr_dict["micro"], tpr_dict["micro"], _ = roc_curve(label_onehot.ravel(), score_array.ravel())
+    roc_auc_dict["micro"] = auc(fpr_dict["micro"], tpr_dict["micro"])
+
+    # macro
+    # First aggregate all false positive rates
+    all_fpr = np.unique(np.concatenate([fpr_dict[i] for i in range(num_class)]))
+    # Then interpolate all ROC curves at this points
+    mean_tpr = np.zeros_like(all_fpr)
+    for i in range(num_class):
+        mean_tpr += interp(all_fpr, fpr_dict[i], tpr_dict[i])
+    # Finally average it and compute AUC
+    mean_tpr /= num_class
+    fpr_dict["macro"] = all_fpr
+    tpr_dict["macro"] = mean_tpr
+    roc_auc_dict["macro"] = auc(fpr_dict["macro"], tpr_dict["macro"])
+
+    # 绘制所有类别平均的roc曲线
+    plt.figure()
+    lw = 2
+    plt.plot(fpr_dict["micro"], tpr_dict["micro"],
+             label='micro-average ROC curve (area = {0:0.2f})'
+                   ''.format(roc_auc_dict["micro"]),
+             color='deeppink', linestyle=':', linewidth=4)
+
+    plt.plot(fpr_dict["macro"], tpr_dict["macro"],
+             label='macro-average ROC curve (area = {0:0.2f})'
+                   ''.format(roc_auc_dict["macro"]),
+             color='navy', linestyle=':', linewidth=4)
+
+    # colors = cycle(['aqua', 'darkorange', 'cornflowerblue'])
+    # for i, color in zip(range(num_class), colors):
+    #     plt.plot(fpr_dict[i], tpr_dict[i], color=color, lw=lw,
+    #              label='ROC curve of class {0} (area = {1:0.2f})'
+    #                    ''.format(i, roc_auc_dict[i]))
+    plt.plot([0, 1], [0, 1], 'k--', lw=lw)
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Some extension of Receiver operating characteristic to multi-class')
+    plt.legend(loc="lower right")
+    plt.savefig('set113_roc.jpg')
+    plt.show()
 
 if __name__ == '__main__':
     print('a')
