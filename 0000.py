@@ -30,4 +30,10 @@ for maindir, subdir, file_name_list in a:
     print(count_a,count_b)
     print(count_c)
 
+# 1.数据泄露
+# 2.resnet-50 BN 实验
+# 3.数据处理
+# 4.roc曲线重新绘制
+
+
 
